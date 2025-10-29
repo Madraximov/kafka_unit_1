@@ -1,0 +1,11 @@
+# Команда создания топика с 3 партициями и replication-factor 2
+kafka-topics.sh --create --topic my-topic --partitions 3 --replication-factor 2 --bootstrap-server localhost:9092
+
+# Просмотреть подробную информацию о топике:
+kafka-topics.sh --describe --topic my-topic --bootstrap-server localhost:9092
+
+# Пример вывода (примерный):
+Topic: my-topic    PartitionCount: 3    ReplicationFactor: 2    Configs:
+    Topic: my-topic    Partition: 0    Leader: 1    Replicas: 1,2    Isr: 1,2
+    Topic: my-topic    Partition: 1    Leader: 2    Replicas: 2,3    Isr: 2,3
+    Topic: my-topic    Partition: 2    Leader: 3    Replicas: 3,1    Isr: 3,1
