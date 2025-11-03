@@ -1,89 +1,61 @@
-import logging
-import signal
-import sys
-import time
 from kafka import KafkaConsumer
-from message import MyMessage
-from config import BOOTSTRAP_SERVERS, TOPIC
+import json
+import time
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-logger = logging.getLogger("batch_consumer")
+topic = "my-topic"
 
-running = True
+consumer = KafkaConsumer(
+    topic,
+    bootstrap_servers='localhost:9092',
+    auto_offset_reset='earliest',
+    enable_auto_commit=False,  # ручной контроль коммитов
+    group_id='batch-consumer-group',
+    value_deserializer=lambda x: json.loads(x.decode('utf-8')),
+    fetch_min_bytes=1024,         # 👈 добавлено: минимальный объем данных для fetch (1KB)
+    fetch_max_wait_ms=500,        # 👈 добавлено: максимум 500мс ждать накопления batch
+    max_poll_records=10
+)
 
-def shutdown(signum, frame):
-    global running
-    running = False
+batch = []
+batch_size = 5
 
-signal.signal(signal.SIGINT, shutdown)
-signal.signal(signal.SIGTERM, shutdown)
+try:
+    print("Starting consumer...")
+    while True:
+        msg_pack = consumer.poll(timeout_ms=1000)
+        for tp, messages in msg_pack.items():
+            for message in messages:
+                batch.append(message.value)
 
-def main():
-    consumer = KafkaConsumer(
-        TOPIC,
-        bootstrap_servers=[BOOTSTRAP_SERVERS],
-        auto_offset_reset='earliest',
-        enable_auto_commit=False,            # ручной коммит
-        group_id='batch-consumer-group',
-        value_deserializer=lambda b: b,
-        consumer_timeout_ms=1000
-    )
-
-    logger.info("BatchMessageConsumer started")
-    min_batch_size = 10
-    batch = []
-
-    try:
-        while running:
-            # getmany предпочтительнее для батчевого чтения
-            records = consumer.poll(timeout_ms=1000, max_records=50)
-            # records: {TopicPartition: [msg, ...], ...}
-            for tp, msgs in records.items():
-                for msg in msgs:
+                if len(batch) >= batch_size:
+                    print(f"Processing batch of {len(batch)} messages...")
                     try:
-                        payload = msg.value
-                        try:
-                            my_msg = MyMessage.from_json(payload)
-                            batch.append((msg, my_msg))
-                        except Exception as e:
-                            logger.exception(f"Deserialization error offset {msg.offset}: {e}")
-                            # не добавляем в batch
-                    except Exception:
-                        logger.exception("Error processing polled message, continuing")
+                        # Имитация обработки
+                        for m in batch:
+                            print(f"  -> {m}")
+                        time.sleep(1)
 
-            if len(batch) >= min_batch_size:
-                # обрабатывать пачку
-                try:
-                    logger.info(f"Processing batch of size {len(batch)}")
-                    for msg, my_msg in batch:
-                        # пример обработки:
-                        logger.info(f"Batch item: {my_msg}")
-                        # при ошибке в обработке — логируем и продолжаем
-                    # после успешной обработки всей пачки — один коммит
-                    consumer.commit()  # sync commit
-                    logger.info("Committed offsets for batch")
-                    batch = []
-                except Exception:
-                    logger.exception("Error handling batch — will continue (no commit)")
-                    # не коммитим, повторим при следующем poll (гарантия at-least-once)
-            else:
-                # если есть элементы, но мало, можно подождать немного или продолжить
-                time.sleep(0.2)
-    except Exception:
-        logger.exception("Consumer loop ended with exception")
-    finally:
-        # при завершении — попробовать обработать оставшуюся пачку
-        if batch:
-            try:
-                logger.info(f"Final processing of remaining batch size {len(batch)}")
-                for msg, my_msg in batch:
-                    logger.info(f"Batch item: {my_msg}")
-                consumer.commit()
-                logger.info("Committed offsets for final batch")
-            except Exception:
-                logger.exception("Failed to commit final batch")
-        consumer.close()
-        logger.info("BatchMessageConsumer closed")
+                        consumer.commit()  # коммитим смещения после успешной обработки
+                        print("Batch committed successfully!\n")
+                        batch.clear()
 
-if __name__ == "__main__":
-    main()
+                    except Exception as e:
+                        print(f"Error during batch processing: {e}")
+                        # Не коммитим, но batch не очищаем, чтобы не потерять сообщения
+                        # Kafka повторит те же сообщения при следующем poll
+                        print("Batch will be retried...\n")
+
+except KeyboardInterrupt:
+    print("\nGracefully shutting down...")
+finally:
+    if batch:
+        print(f"Processing remaining {len(batch)} messages before exit...")
+        try:
+            for m in batch:
+                print(f"  -> {m}")
+            consumer.commit()
+            print("Final batch committed.")
+        except Exception as e:
+            print(f"Error during final batch commit: {e}")
+    consumer.close()
+    print("Consumer closed.")
